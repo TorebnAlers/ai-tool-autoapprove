@@ -1,200 +1,190 @@
-/**
- * AI Tool AutoApprove — Content Script v0.4
- * KEY FIX: Strip keyboard shortcut hints (e.g. "^Enter", "^Esc") from button
- * text before matching — Perplexity renders "Approve ^Enter" as the button label.
- */
+// AI Tool AutoApprove - Content Script v0.5
+// Strips keyboard shortcut hints (e.g. ^Enter) before matching button text
 
-// ─── Patterns ─────────────────────────────────────────────────────────────
-
-const APPROVE_PATTERNS = [
+var APPROVE_PATTERNS = [
   /^approve$/i, /^allow$/i, /^confirm$/i, /^yes$/i,
   /^allow access$/i, /^grant access$/i, /^accept$/i,
   /allow tool/i, /approve action/i, /approve request/i
 ];
 
-const DENY_PATTERNS = [
+var DENY_PATTERNS = [
   /^deny$/i, /^reject$/i, /^cancel$/i, /^no$/i, /^block$/i, /^decline$/i
 ];
 
-const DESTRUCTIVE = [
+var DESTRUCTIVE = [
   /delete/i, /remove/i, /destroy/i, /drop/i,
   /wipe/i, /erase/i, /purge/i, /format/i
 ];
 
-// ─── Settings ─────────────────────────────────────────────────────────────
+// Settings
+var settings = null;
 
-let settings = null;
-
-chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, (res) => {
-  settings = res?.settings ?? null;
+chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, function(res) {
+  settings = (res && res.settings) ? res.settings : null;
 });
-chrome.storage.onChanged.addListener((changes) => {
+
+chrome.storage.onChanged.addListener(function(changes) {
   if (changes.settings) settings = changes.settings.newValue;
 });
 
-// ─── Text extraction ──────────────────────────────────────────────────────────
-
-/**
- * Get clean button label, stripping:
- * - Keyboard shortcut hints: ^Enter, ^Esc, Ctrl+Z, ↵, ⌫, etc.
- * - Leading/trailing whitespace and newlines
- * - Non-printable characters
- */
+// Strip ^Enter, ^Esc etc from button text before matching
 function cleanBtnText(el) {
-  // Try to get only the first text node (avoids picking up nested kbd/span shortcuts)
-  let text = '';
-  for (const node of el.childNodes) {
-    if (node.nodeType === Node.TEXT_NODE) {
+  var text = '';
+  var nodes = el.childNodes;
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i];
+    if (node.nodeType === 3) { // TEXT_NODE
       text += node.textContent;
     } else if (node.nodeName === 'SPAN' || node.nodeName === 'DIV') {
-      // Only include span/div text if it looks like a real word, not a shortcut
-      const t = node.textContent.trim();
-      // Skip if it's a keyboard shortcut like "^Enter", "^Esc", "Ctrl+X"
-      if (!/^(\^|Ctrl|Alt|Cmd|Shift|Meta)/.test(t) && !/^[↵⌫⌘⌃]/.test(t)) {
-        text += t;
+      var t = node.textContent.trim();
+      // Skip shortcut spans like "^Enter", "^Esc", "Ctrl+X"
+      if (!/^(\^|Ctrl|Alt|Cmd|Shift|Meta)/i.test(t)) {
+        text += ' ' + t;
       }
     }
   }
   text = text.trim();
-
-  // Fallback: use full innerText but strip shortcut patterns
   if (!text) {
     text = (el.innerText || el.textContent || '').trim();
   }
-
-  // Strip keyboard hint suffixes like " ^Enter", " ^Esc", " Ctrl+Z"
-  text = text
-    .replace(/\s*(\^|Ctrl\+|Alt\+|Cmd\+|Shift\+|Meta\+)\S+/gi, '')
-    .replace(/\s+[↵⌫⌘⌃]\S*/g, '')
-    .replace(/\n.*/s, '')  // take only first line
-    .trim();
-
+  // Strip trailing shortcut suffixes
+  text = text.replace(/\s*(\^|Ctrl\+|Alt\+|Cmd\+|Shift\+|Meta\+)\S+/gi, '').trim();
+  // Take only first line
+  text = text.split('\n')[0].trim();
   return text;
 }
 
 function isApprove(el) {
-  const t = cleanBtnText(el);
-  return APPROVE_PATTERNS.some(p => p.test(t));
+  var t = cleanBtnText(el);
+  return APPROVE_PATTERNS.some(function(p) { return p.test(t); });
 }
 
 function isDeny(el) {
-  const t = cleanBtnText(el);
-  return DENY_PATTERNS.some(p => p.test(t));
+  var t = cleanBtnText(el);
+  return DENY_PATTERNS.some(function(p) { return p.test(t); });
 }
 
 function isSiteEnabled() {
   if (!settings) return true;
-  const host = location.hostname.replace(/^www\./, '');
-  for (const [k, v] of Object.entries(settings.sites || {})) {
-    if (host.includes(k)) return v;
+  var host = location.hostname.replace(/^www\./, '');
+  var sites = settings.sites || {};
+  var keys = Object.keys(sites);
+  for (var i = 0; i < keys.length; i++) {
+    if (host.indexOf(keys[i]) !== -1) return sites[keys[i]];
   }
   return true;
 }
 
 function passesRules(text) {
   if (!settings) return true;
-  const { mode, whitelist = [], blacklist = [] } = settings.rules;
-  const t = text.toLowerCase();
+  var rules = settings.rules || {};
+  var mode = rules.mode || 'auto';
+  var whitelist = rules.whitelist || [];
+  var blacklist = rules.blacklist || [];
+  var t = text.toLowerCase();
   if (mode === 'blacklist') {
-    if (blacklist.some(k => t.includes(k.toLowerCase()))) return false;
-    if (DESTRUCTIVE.some(p => p.test(t))) return false;
+    for (var i = 0; i < blacklist.length; i++) {
+      if (t.indexOf(blacklist[i].toLowerCase()) !== -1) return false;
+    }
+    for (var j = 0; j < DESTRUCTIVE.length; j++) {
+      if (DESTRUCTIVE[j].test(t)) return false;
+    }
     return true;
   }
   if (mode === 'whitelist') {
     if (!whitelist.length) return true;
-    return whitelist.some(k => t.includes(k.toLowerCase()));
+    for (var k = 0; k < whitelist.length; k++) {
+      if (t.indexOf(whitelist[k].toLowerCase()) !== -1) return true;
+    }
+    return false;
   }
   return true;
 }
 
-// Walk UP the DOM from approveBtn until we find a node that contains
-// BOTH an approve-text button AND a deny-text button.
+// Walk up DOM to find a container with both Approve + Deny buttons
 function findDialogContainer(approveBtn) {
-  let el = approveBtn.parentElement;
-  for (let i = 0; i < 10 && el && el !== document.body; i++) {
-    const btns = Array.from(el.querySelectorAll('button, [role="button"]'));
+  var el = approveBtn.parentElement;
+  for (var i = 0; i < 10 && el && el !== document.body; i++) {
+    var btns = Array.from(el.querySelectorAll('button, [role="button"]'));
     if (btns.some(isDeny) && btns.some(isApprove)) return el;
     el = el.parentElement;
   }
   return null;
 }
 
-// ─── Toast ──────────────────────────────────────────────────────────────────
-
 function showToast(msg) {
-  if (!settings?.showToast) return;
-  document.getElementById('aa-toast')?.remove();
-  const el = document.createElement('div');
+  if (!settings || !settings.showToast) return;
+  var old = document.getElementById('aa-toast');
+  if (old) old.remove();
+  var el = document.createElement('div');
   el.id = 'aa-toast';
-  el.textContent = '✅ AutoApprove: ' + msg;
-  Object.assign(el.style, {
-    position: 'fixed', bottom: '20px', right: '20px',
-    zIndex: '2147483647', background: '#1c1b19', color: '#e5e5e5',
-    padding: '10px 16px', borderRadius: '8px', fontSize: '13px',
-    fontFamily: 'system-ui, sans-serif',
-    boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
-    maxWidth: '360px', lineHeight: '1.5',
-    opacity: '0', transition: 'opacity 0.2s ease',
-    pointerEvents: 'none'
-  });
+  el.textContent = 'AutoApprove: ' + msg;
+  el.style.cssText = [
+    'position:fixed', 'bottom:20px', 'right:20px',
+    'z-index:2147483647', 'background:#1c1b19', 'color:#e5e5e5',
+    'padding:10px 16px', 'border-radius:8px', 'font-size:13px',
+    'font-family:system-ui,sans-serif',
+    'box-shadow:0 4px 16px rgba(0,0,0,0.5)',
+    'max-width:360px', 'line-height:1.5',
+    'opacity:0', 'transition:opacity 0.2s ease',
+    'pointer-events:none'
+  ].join(';');
   document.body.appendChild(el);
-  requestAnimationFrame(() => { el.style.opacity = '1'; });
-  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 250); }, 4000);
+  requestAnimationFrame(function() { el.style.opacity = '1'; });
+  setTimeout(function() {
+    el.style.opacity = '0';
+    setTimeout(function() { el.remove(); }, 250);
+  }, 4000);
 }
 
-// ─── Core scanner ────────────────────────────────────────────────────────────
-
-const clicked = new WeakSet();
+var clicked = new WeakSet();
 
 function scanDocument() {
-  if (!settings?.enabled) return;
+  if (!settings || !settings.enabled) return;
   if (!isSiteEnabled()) return;
 
-  const allButtons = Array.from(document.querySelectorAll('button, [role="button"]'))
-    .filter(b => !b.disabled);
+  var allButtons = Array.from(document.querySelectorAll('button, [role="button"]'))
+    .filter(function(b) { return !b.disabled; });
 
-  for (const btn of allButtons) {
+  for (var i = 0; i < allButtons.length; i++) {
+    var btn = allButtons[i];
     if (clicked.has(btn)) continue;
     if (!isApprove(btn)) continue;
 
-    const container = findDialogContainer(btn);
+    var container = findDialogContainer(btn);
     if (!container) continue;
 
-    const text = container.innerText || '';
+    var text = container.innerText || '';
     if (!passesRules(text)) continue;
 
     clicked.add(btn);
     btn.click();
 
-    const label = cleanBtnText(btn);
-    const site = location.hostname.replace(/^www\./, '');
-    const excerpt = text.slice(0, 120).replace(/\n+/g, ' ').trim();
-    showToast(`“${label}” approved on ${site}`);
-    chrome.runtime.sendMessage({ type: 'LOG_APPROVAL', payload: { site, label, excerpt } });
+    var label = cleanBtnText(btn);
+    var site = location.hostname.replace(/^www\./, '');
+    var excerpt = text.slice(0, 120).replace(/\n+/g, ' ').trim();
+    showToast('"' + label + '" approved on ' + site);
+    chrome.runtime.sendMessage({ type: 'LOG_APPROVAL', payload: { site: site, label: label, excerpt: excerpt } });
   }
 }
 
-// ─── Observer + interval fallback ─────────────────────────────────────────────
-
-let scanPending = false;
+var scanPending = false;
 function scheduleScan() {
   if (scanPending) return;
   scanPending = true;
-  requestAnimationFrame(() => { scanPending = false; scanDocument(); });
+  requestAnimationFrame(function() { scanPending = false; scanDocument(); });
 }
 
 new MutationObserver(scheduleScan).observe(document.documentElement, {
   childList: true, subtree: true
 });
 
-// Interval fallback — catches dialogs already in DOM before script loaded
 setInterval(scanDocument, 800);
 
-// ─── Boot ────────────────────────────────────────────────────────────────────
-
-function waitForSettings(n = 0) {
+function waitForSettings(n) {
+  n = n || 0;
   if (settings !== null) { scanDocument(); return; }
   if (n > 30) return;
-  setTimeout(() => waitForSettings(n + 1), 100);
+  setTimeout(function() { waitForSettings(n + 1); }, 100);
 }
 waitForSettings();
