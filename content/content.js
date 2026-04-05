@@ -16,7 +16,7 @@ var DESTRUCTIVE = [
   /wipe/i, /erase/i, /purge/i, /format/i
 ];
 
-var DEFAULT_SETTINGS = {
+var defaultSettings = {
   enabled: true,
   showToast: true,
   rules: {
@@ -38,7 +38,7 @@ var DEFAULT_SETTINGS = {
 var settings = null;
 
 chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, function(res) {
-  settings = (res && res.settings) ? res.settings : DEFAULT_SETTINGS;
+  settings = (res && res.settings) ? res.settings : defaultSettings;
 });
 
 chrome.storage.onChanged.addListener(function(changes) {
@@ -202,7 +202,7 @@ setInterval(scanDocument, 800);
 function waitForSettings(n) {
   n = n || 0;
   if (settings !== null) { scanDocument(); return; }
-  if (n > 30) { settings = DEFAULT_SETTINGS; scanDocument(); return; }
+  if (n > 30) { settings = defaultSettings; scanDocument(); return; }
   setTimeout(function() { waitForSettings(n + 1); }, 100);
 }
 waitForSettings();
