@@ -16,7 +16,7 @@ var DESTRUCTIVE = [
   /wipe/i, /erase/i, /purge/i, /format/i
 ];
 
-var defaultSettings = {
+const defaultSettings = {
   enabled: true,
   showToast: true,
   rules: {
@@ -35,7 +35,7 @@ var defaultSettings = {
 };
 
 // Settings
-var settings = null;
+let settings = null;
 
 chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, function(res) {
   settings = (res && res.settings) ? res.settings : defaultSettings;
