@@ -16,11 +16,29 @@ var DESTRUCTIVE = [
   /wipe/i, /erase/i, /purge/i, /format/i
 ];
 
+const defaultSettings = {
+  enabled: true,
+  showToast: true,
+  rules: {
+    mode: 'auto',
+    whitelist: [],
+    blacklist: []
+  },
+  sites: {
+    'perplexity.ai': true,
+    'claude.ai': true,
+    'chatgpt.com': true,
+    'chat.openai.com': true,
+    'github.com': true,
+    'copilot.microsoft.com': true
+  }
+};
+
 // Settings
-var settings = null;
+let settings = null;
 
 chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, function(res) {
-  settings = (res && res.settings) ? res.settings : null;
+  settings = (res && res.settings) ? res.settings : defaultSettings;
 });
 
 chrome.storage.onChanged.addListener(function(changes) {
@@ -184,7 +202,7 @@ setInterval(scanDocument, 800);
 function waitForSettings(n) {
   n = n || 0;
   if (settings !== null) { scanDocument(); return; }
-  if (n > 30) return;
+  if (n > 30) { settings = defaultSettings; scanDocument(); return; }
   setTimeout(function() { waitForSettings(n + 1); }, 100);
 }
 waitForSettings();
