@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "AI Tool AutoApprove",
+  "version": "0.1.0",
+  "description": "Automatically approves AI agent tool-call permission prompts on Perplexity, Claude, ChatGPT, GitHub Copilot and more.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "AI Tool AutoApprove"
+  },
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.perplexity.ai/*",
+        "https://claude.ai/*",
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://github.com/*",
+        "https://copilot.microsoft.com/*"
+      ],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

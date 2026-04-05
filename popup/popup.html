@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Tool AutoApprove</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 2L2 7l10 5 10-5-10-5z" stroke="#4f98a3" stroke-width="2" stroke-linejoin="round"/>
+        <path d="M2 17l10 5 10-5" stroke="#4f98a3" stroke-width="2" stroke-linejoin="round"/>
+        <path d="M2 12l10 5 10-5" stroke="#4f98a3" stroke-width="2" stroke-linejoin="round"/>
+      </svg>
+      <span>AI AutoApprove</span>
+    </div>
+    <label class="toggle" aria-label="Enable or disable extension">
+      <input type="checkbox" id="masterToggle">
+      <span class="slider"></span>
+    </label>
+  </header>
+
+  <section class="section">
+    <div class="row">
+      <span class="label">Show toast notifications</span>
+      <label class="toggle small" aria-label="Toggle toast notifications">
+        <input type="checkbox" id="toastToggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-title">Approval Mode</div>
+    <div class="radio-group">
+      <label><input type="radio" name="mode" value="auto"> Auto-approve everything</label>
+      <label><input type="radio" name="mode" value="whitelist"> Whitelist (approve only matching)</label>
+      <label><input type="radio" name="mode" value="blacklist"> Blacklist (block matching, approve rest)</label>
+    </div>
+  </section>
+
+  <section class="section" id="listSection">
+    <div class="section-title" id="listTitle">List (one keyword per line)</div>
+    <textarea id="listInput" rows="4" placeholder="e.g.\ngithub\ncreate_file\npush"></textarea>
+  </section>
+
+  <section class="section">
+    <div class="section-title">Sites</div>
+    <div id="sitesContainer"></div>
+  </section>
+
+  <div class="status" id="status"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
