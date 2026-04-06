@@ -4,10 +4,14 @@
 var APPROVE_PATTERNS = [
   /^approve$/i, /^allow$/i, /^confirm$/i, /^yes$/i, /^continue$/i, /^proceed$/i,
   /^allow access$/i, /^grant access$/i, /^accept$/i, /^run$/i, /^run anyway$/i,
-  /^allow once$/i, /^always allow$/i, /^allow for this chat$/i, /^allow for this session$/i, /^approve all$/i,
+  /^allow once$/i,
+  /^always allow$/i,
+  /^allow for this chat$/i,
+  /^allow for this session$/i,
+  /^approve all$/i,
   /^auto ?approve$/i,
   /allow tool/i, /approve action/i, /approve request/i, /allow .*request/i,
-  /allow .*permission/i, /run tool/i, /allow .*access/i, /authorize/i, /execute/i
+  /allow .*permission/i, /run tool/i, /authorize/i, /execute/i
 ];
 
 var DENY_PATTERNS = [
@@ -20,6 +24,9 @@ var DESTRUCTIVE = [
   /wipe/i, /erase/i, /purge/i, /format/i
 ];
 var DIALOG_CLASS_PATTERN = /\b(dialog|modal|popover|sheet|drawer|overlay|prompt|confirm)\b/i;
+// Context terms commonly present in tool-permission prompts where button text is generic
+// (e.g., "Allow", "Run"). This helps detect chat approval UI context when wrappers are weak.
+// "mcp" = Model Context Protocol, which some chat UIs include in permission text.
 var PROMPT_CONTEXT_PATTERN = /\b(tool|permission|access|request|authorize|approval|agent|mcp|run|execute|connect)\b/i;
 var MAX_CLICK_ATTEMPTS = 3;
 var CLICK_RETRY_DELAY_MS = 140;
@@ -334,8 +341,11 @@ function hasSiblingDeny(container) {
 }
 
 function hasPromptContext(btn) {
-  var scope = btn.closest('[role="dialog"], [aria-modal="true"], dialog, form, section, article, div') || btn.parentElement || btn;
-  var contextText = ((scope && scope.innerText) || '').toLowerCase();
+  var scope =
+    btn.closest('[role="dialog"], [aria-modal="true"], dialog, form') ||
+    btn.closest('[class*="dialog" i], [class*="modal" i], [class*="popover" i], [class*="prompt" i]');
+  if (!scope) return false;
+  var contextText = (scope.innerText || '').toLowerCase();
   return PROMPT_CONTEXT_PATTERN.test(contextText);
 }
 
@@ -478,6 +488,8 @@ function scanDocument() {
     var hasDestructive = DESTRUCTIVE.some(function(p) { return p.test(contextText); });
     var threshold = hasDestructive ? destructiveThreshold : baseThreshold;
 
+    // Some chat UIs render permission prompts without stable dialog semantics/selectors.
+    // Allow prompt-context evidence to qualify candidates when wrapper detection is absent.
     if (!container && !semanticHit && !contextHint) {
       debugLog('no-dialog-context', { label: cleanBtnText(btn), score: score });
       continue;
