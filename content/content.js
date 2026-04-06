@@ -24,6 +24,7 @@ var CLICK_RETRY_DELAY_MS = 140;
 var MAX_SCAN_ATTEMPTS = 5;
 var SCAN_SCHEDULE_DELAY_MS = 60;
 var SCAN_INTERVAL_MS = 800;
+var MAX_EXCERPT_LENGTH = 120;
 var ACTIONABLE_SELECTOR = [
   'button',
   '[role="button"]',
@@ -94,7 +95,8 @@ chrome.storage.onChanged.addListener(function(changes) {
 });
 
 function debugLog(reason, meta) {
-  if (!settings || !settings.debug) return;
+  var debugEnabled = settings ? !!settings.debug : !!defaultSettings.debug;
+  if (!debugEnabled) return;
   console.log('[AutoApprove][debug]', reason, meta || {});
 }
 
@@ -215,7 +217,9 @@ function collectSearchRootsFromDocument(doc, roots, seenDocs) {
   if (!doc || seenDocs.has(doc)) return;
   seenDocs.add(doc);
   roots.push(doc);
-  var walker = doc.createTreeWalker(doc.documentElement || doc, NodeFilter.SHOW_ELEMENT);
+  var rootNode = doc.documentElement || doc.body;
+  if (!rootNode) return;
+  var walker = doc.createTreeWalker(rootNode, NodeFilter.SHOW_ELEMENT);
   while (walker.nextNode()) {
     var node = walker.currentNode;
     if (node.shadowRoot) roots.push(node.shadowRoot);
@@ -223,7 +227,7 @@ function collectSearchRootsFromDocument(doc, roots, seenDocs) {
       try {
         if (node.contentDocument) collectSearchRootsFromDocument(node.contentDocument, roots, seenDocs);
       } catch (_e) {
-        // cross-origin frame, ignore
+        // ignore inaccessible frame/document traversal errors
       }
     }
   }
@@ -258,7 +262,7 @@ function queryCandidates() {
         var sem = root.querySelectorAll(sel);
         for (var m = 0; m < sem.length; m++) candidates.add(sem[m]);
       } catch (_e) {
-        // invalid selector in remote adapter, ignore
+        // ignore adapter selector/query errors
       }
     }
   }
@@ -373,13 +377,21 @@ function executeApproval(btn, container, text, score) {
   var attempts = 0;
   function attempt() {
     attempts += 1;
-    try { btn.click(); } catch (_e) {}
-    try { clickWithEvents(btn); } catch (_e2) {}
+    try {
+      btn.click();
+    } catch (_e) {
+      debugLog('native-click-failed', { label: cleanBtnText(btn) });
+    }
+    try {
+      clickWithEvents(btn);
+    } catch (_e2) {
+      debugLog('event-click-failed', { label: cleanBtnText(btn) });
+    }
     setTimeout(function() {
       if (!stillActionable(btn, container) || attempts >= MAX_CLICK_ATTEMPTS) {
         var label = cleanBtnText(btn) || btn.getAttribute('aria-label') || 'approve';
         var site = location.hostname.replace(/^www\./, '');
-        var excerpt = (text || '').slice(0, 120).replace(/\n+/g, ' ').trim();
+        var excerpt = (text || '').slice(0, MAX_EXCERPT_LENGTH).replace(/\n+/g, ' ').trim();
         showToast('"' + label + '" approved on ' + site);
         chrome.runtime.sendMessage({
           type: 'LOG_APPROVAL',
