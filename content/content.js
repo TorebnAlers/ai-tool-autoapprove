@@ -1,32 +1,80 @@
-// AI Tool AutoApprove - Content Script v0.5
-// Strips keyboard shortcut hints (e.g. ^Enter) before matching button text
+// AI Tool AutoApprove - Content Script v0.6
+// Reliability-focused multi-strategy matcher with deep traversal and retry clicks.
 
 var APPROVE_PATTERNS = [
-  /^approve$/i, /^allow$/i, /^confirm$/i, /^yes$/i,
-  /^allow access$/i, /^grant access$/i, /^accept$/i,
+  /^approve$/i, /^allow$/i, /^confirm$/i, /^yes$/i, /^continue$/i, /^proceed$/i,
+  /^allow access$/i, /^grant access$/i, /^accept$/i, /^run$/i, /^run anyway$/i,
   /^auto ?approve$/i,
-  /allow tool/i, /approve action/i, /approve request/i
+  /allow tool/i, /approve action/i, /approve request/i, /allow .*request/i,
+  /allow .*permission/i, /run tool/i, /execute/i
 ];
 
 var DENY_PATTERNS = [
-  /^deny$/i, /^reject$/i, /^cancel$/i, /^no$/i, /^block$/i, /^decline$/i
+  /^deny$/i, /^reject$/i, /^cancel$/i, /^no$/i, /^block$/i, /^decline$/i,
+  /^disallow$/i, /^stop$/i, /^abort$/i
 ];
 
 var DESTRUCTIVE = [
   /delete/i, /remove/i, /destroy/i, /drop/i,
   /wipe/i, /erase/i, /purge/i, /format/i
 ];
-var DIALOG_CLASS_PATTERN = /\b(dialog|modal|popover|sheet|drawer|overlay)\b/i;
+var DIALOG_CLASS_PATTERN = /\b(dialog|modal|popover|sheet|drawer|overlay|prompt|confirm)\b/i;
+var MAX_CLICK_ATTEMPTS = 3;
+var CLICK_RETRY_DELAY_MS = 140;
+var MAX_SCAN_ATTEMPTS = 5;
+var SCAN_SCHEDULE_DELAY_MS = 60;
+var SCAN_INTERVAL_MS = 800;
+var MAX_EXCERPT_LENGTH = 120;
+var ACTIONABLE_SELECTOR = [
+  'button',
+  '[role="button"]',
+  'input[type="button"]',
+  'input[type="submit"]',
+  '[data-testid*="approve" i]',
+  '[data-testid*="allow" i]',
+  '[data-testid*="confirm" i]',
+  '[aria-label*="approve" i]',
+  '[aria-label*="allow" i]',
+  '[aria-label*="confirm" i]',
+  '[title*="approve" i]',
+  '[title*="allow" i]',
+  '[title*="confirm" i]'
+].join(',');
+
+var DEFAULT_ADAPTERS = {
+  'github.com': {
+    selectors: [
+      '[data-testid*="copilot" i] button',
+      '[data-testid*="confirmation" i] button',
+      '[data-testid*="tool" i] button'
+    ]
+  },
+  'chatgpt.com': {
+    selectors: ['[data-testid*="confirm" i]', '[data-testid*="approve" i]']
+  },
+  'chat.openai.com': {
+    selectors: ['[data-testid*="confirm" i]', '[data-testid*="approve" i]']
+  }
+};
 
 const defaultSettings = {
   enabled: true,
   showToast: true,
+  debug: false,
+  confidenceThreshold: 50,
+  destructiveThreshold: 75,
+  heuristics: {
+    approveHints: [],
+    denyHints: []
+  },
+  adapters: {},
   rules: {
     mode: 'auto',
     whitelist: [],
     blacklist: []
   },
   sites: {
+    '*': true,
     'perplexity.ai': true,
     'claude.ai': true,
     'chatgpt.com': true,
@@ -36,7 +84,6 @@ const defaultSettings = {
   }
 };
 
-// Settings
 let settings = null;
 
 chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, function(res) {
@@ -47,41 +94,67 @@ chrome.storage.onChanged.addListener(function(changes) {
   if (changes.settings) settings = changes.settings.newValue;
 });
 
-// Strip ^Enter, ^Esc etc from button text before matching
+function debugLog(reason, meta) {
+  var debugEnabled = settings ? !!settings.debug : !!defaultSettings.debug;
+  if (!debugEnabled) return;
+  console.log('[AutoApprove][debug]', reason, meta || {});
+}
+
 function cleanBtnText(el) {
   var text = '';
-  var nodes = el.childNodes;
+  var nodes = el.childNodes || [];
   for (var i = 0; i < nodes.length; i++) {
     var node = nodes[i];
-    if (node.nodeType === 3) { // TEXT_NODE
+    if (node.nodeType === 3) {
       text += node.textContent;
     } else if (node.nodeName === 'SPAN' || node.nodeName === 'DIV') {
-      var t = node.textContent.trim();
-      // Skip shortcut spans like "^Enter", "^Esc", "Ctrl+X"
-      if (!/^(\^|Ctrl|Alt|Cmd|Shift|Meta)/i.test(t)) {
-        text += ' ' + t;
-      }
+      var t = (node.textContent || '').trim();
+      if (!/^(\^|Ctrl|Alt|Cmd|Shift|Meta)/i.test(t)) text += ' ' + t;
     }
   }
   text = text.trim();
-  if (!text) {
-    text = (el.innerText || el.textContent || '').trim();
-  }
-  // Strip trailing shortcut suffixes
+  if (!text) text = (el.innerText || el.textContent || '').trim();
   text = text.replace(/\s*(\^|Ctrl\+|Alt\+|Cmd\+|Shift\+|Meta\+)\S+/gi, '').trim();
-  // Take only first line
-  text = text.split('\n')[0].trim();
-  return text;
+  return text.split('\n')[0].trim();
+}
+
+function norm(s) {
+  return (s || '').toString().trim().toLowerCase();
+}
+
+function elementSignals(el) {
+  var text = cleanBtnText(el);
+  return {
+    text: text,
+    aria: el.getAttribute('aria-label') || '',
+    title: el.getAttribute('title') || '',
+    testid: el.getAttribute('data-testid') || '',
+    value: el.value || ''
+  };
+}
+
+function getPatterns(basePatterns, hintList) {
+  var patterns = basePatterns.slice();
+  for (var i = 0; i < (hintList || []).length; i++) {
+    var hint = norm(hintList[i]);
+    if (!hint) continue;
+    patterns.push(new RegExp(hint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
+  }
+  return patterns;
 }
 
 function isApprove(el) {
-  var t = cleanBtnText(el);
-  return APPROVE_PATTERNS.some(function(p) { return p.test(t); });
+  var s = elementSignals(el);
+  var joined = [s.text, s.aria, s.title, s.testid, s.value].join(' ');
+  var approve = getPatterns(APPROVE_PATTERNS, settings && settings.heuristics && settings.heuristics.approveHints);
+  return approve.some(function(p) { return p.test(joined); });
 }
 
 function isDeny(el) {
-  var t = cleanBtnText(el);
-  return DENY_PATTERNS.some(function(p) { return p.test(t); });
+  var s = elementSignals(el);
+  var joined = [s.text, s.aria, s.title, s.testid, s.value].join(' ');
+  var deny = getPatterns(DENY_PATTERNS, settings && settings.heuristics && settings.heuristics.denyHints);
+  return deny.some(function(p) { return p.test(joined); });
 }
 
 function isSiteEnabled() {
@@ -90,6 +163,7 @@ function isSiteEnabled() {
   var sites = settings.sites || {};
   var keys = Object.keys(sites);
   for (var i = 0; i < keys.length; i++) {
+    if (keys[i] === '*' && host) return sites[keys[i]];
     if (host.indexOf(keys[i]) !== -1) return sites[keys[i]];
   }
   return true;
@@ -101,10 +175,10 @@ function passesRules(text) {
   var mode = rules.mode || 'auto';
   var whitelist = rules.whitelist || [];
   var blacklist = rules.blacklist || [];
-  var t = text.toLowerCase();
+  var t = norm(text);
   if (mode === 'blacklist') {
     for (var i = 0; i < blacklist.length; i++) {
-      if (t.indexOf(blacklist[i].toLowerCase()) !== -1) return false;
+      if (t.indexOf(norm(blacklist[i])) !== -1) return false;
     }
     for (var j = 0; j < DESTRUCTIVE.length; j++) {
       if (DESTRUCTIVE[j].test(t)) return false;
@@ -114,38 +188,156 @@ function passesRules(text) {
   if (mode === 'whitelist') {
     if (!whitelist.length) return true;
     for (var k = 0; k < whitelist.length; k++) {
-      if (t.indexOf(whitelist[k].toLowerCase()) !== -1) return true;
+      if (t.indexOf(norm(whitelist[k])) !== -1) return true;
     }
     return false;
   }
   return true;
 }
 
-// Walk up DOM to find a container with both Approve + Deny buttons
+function isVisible(el) {
+  if (!el || !el.isConnected) return false;
+  var style = window.getComputedStyle(el);
+  if (style.visibility === 'hidden' || style.display === 'none' || style.pointerEvents === 'none') return false;
+  var rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+function isDisabled(el) {
+  return !!(el.disabled || el.getAttribute('aria-disabled') === 'true');
+}
+
+function getRootNodeDocument(root) {
+  if (!root) return document;
+  if (root.nodeType === 9) return root;
+  return (root.ownerDocument || document);
+}
+
+function collectSearchRootsFromDocument(doc, roots, seenDocs) {
+  if (!doc || seenDocs.has(doc)) return;
+  seenDocs.add(doc);
+  roots.push(doc);
+  var rootNode = doc.documentElement || doc.body;
+  if (!rootNode) return;
+  var walker = doc.createTreeWalker(rootNode, NodeFilter.SHOW_ELEMENT);
+  while (walker.nextNode()) {
+    var node = walker.currentNode;
+    if (node.shadowRoot) roots.push(node.shadowRoot);
+    if (node.tagName === 'IFRAME') {
+      try {
+        if (node.contentDocument) collectSearchRootsFromDocument(node.contentDocument, roots, seenDocs);
+      } catch (_e) {
+        // ignore inaccessible frame/document traversal errors
+      }
+    }
+  }
+}
+
+function collectSearchRoots() {
+  var roots = [];
+  collectSearchRootsFromDocument(document, roots, new Set());
+  return roots;
+}
+
+function getHostAdapter(host) {
+  var merged = {};
+  var defaults = DEFAULT_ADAPTERS[host] || { selectors: [] };
+  var fromSettings = (settings && settings.adapters && settings.adapters[host]) || { selectors: [] };
+  merged.selectors = (defaults.selectors || []).concat(fromSettings.selectors || []);
+  return merged;
+}
+
+function queryCandidates() {
+  var roots = collectSearchRoots();
+  var candidates = new Set();
+  var host = location.hostname.replace(/^www\./, '');
+  var adapter = getHostAdapter(host);
+  for (var i = 0; i < roots.length; i++) {
+    var root = roots[i];
+    var queried = root.querySelectorAll(ACTIONABLE_SELECTOR);
+    for (var j = 0; j < queried.length; j++) candidates.add(queried[j]);
+    for (var k = 0; k < adapter.selectors.length; k++) {
+      var sel = adapter.selectors[k];
+      try {
+        var sem = root.querySelectorAll(sel);
+        for (var m = 0; m < sem.length; m++) candidates.add(sem[m]);
+      } catch (_e) {
+        // ignore adapter selector/query errors
+      }
+    }
+  }
+  return Array.from(candidates);
+}
+
 function findDialogContainer(approveBtn) {
-  var el = approveBtn.parentElement;
-  for (var i = 0; i < 12 && el && el !== document.body; i++) {
-    var btns = Array.from(el.querySelectorAll('button, [role="button"]'));
+  var el = approveBtn;
+  for (var i = 0; i < 14 && el; i++) {
+    if (el.nodeType !== 1) {
+      el = el.parentElement;
+      continue;
+    }
+    var btns = Array.from(el.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]'));
     if (btns.some(isDeny) && btns.some(isApprove)) return el;
 
-    var role = (el.getAttribute('role') || '').toLowerCase();
-    var ariaModal = (el.getAttribute('aria-modal') || '').toLowerCase();
-    var className = (el.className || '').toString().toLowerCase();
-    if (
-      role === 'dialog' ||
-      role === 'alertdialog' ||
-      ariaModal === 'true' ||
-      DIALOG_CLASS_PATTERN.test(className)
-    ) {
+    var role = norm(el.getAttribute('role'));
+    var ariaModal = norm(el.getAttribute('aria-modal'));
+    var className = norm(el.className);
+    if (role === 'dialog' || role === 'alertdialog' || ariaModal === 'true' || DIALOG_CLASS_PATTERN.test(className)) {
       return el;
     }
-    el = el.parentElement;
+    var root = el.getRootNode();
+    if (root && root.host && el === root) {
+      el = root.host;
+    } else {
+      el = el.parentElement;
+    }
   }
   return null;
 }
 
+function hasSiblingDeny(container) {
+  if (!container) return false;
+  var btns = Array.from(container.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]'));
+  for (var i = 0; i < btns.length; i++) {
+    if (isDeny(btns[i])) return true;
+  }
+  return false;
+}
+
+function scoreCandidate(btn, container, text, isSemanticHit) {
+  var score = 0;
+  var s = elementSignals(btn);
+  var combined = [s.text, s.aria, s.title, s.testid, s.value].join(' ');
+  if (isApprove(btn)) score += 40;
+  if (/^approve$|^allow$|^confirm$|^continue$|^run$/i.test(norm(s.text))) score += 20;
+  if (isSemanticHit) score += 25;
+  if (container) score += 15;
+  if (hasSiblingDeny(container)) score += 20;
+  if (DIALOG_CLASS_PATTERN.test(norm((container && container.className) || ''))) score += 5;
+  if (isDisabled(btn) || !isVisible(btn)) score -= 50;
+  if (isDeny(btn)) score -= 100;
+  if (DESTRUCTIVE.some(function(p) { return p.test(combined); })) score -= 50;
+  if (DESTRUCTIVE.some(function(p) { return p.test(text); })) score -= 25;
+  return score;
+}
+
+function clickWithEvents(el) {
+  var evs = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+  for (var i = 0; i < evs.length; i++) {
+    el.dispatchEvent(new MouseEvent(evs[i], { bubbles: true, cancelable: true, view: window }));
+  }
+}
+
+function stillActionable(btn, container) {
+  if (!btn || !btn.isConnected) return false;
+  if (!isVisible(btn) || isDisabled(btn)) return false;
+  if (container && !container.isConnected) return false;
+  return isApprove(btn);
+}
+
 function showToast(msg) {
   if (!settings || !settings.showToast) return;
+  if (!document.body) return;
   var old = document.getElementById('aa-toast');
   if (old) old.remove();
   var el = document.createElement('div');
@@ -169,54 +361,137 @@ function showToast(msg) {
   }, 4000);
 }
 
+var attempted = new WeakMap();
 var clicked = new WeakSet();
+
+function markAttempt(btn) {
+  var n = attempted.get(btn) || 0;
+  attempted.set(btn, n + 1);
+  return n + 1;
+}
+
+function executeApproval(btn, container, text, score) {
+  if (clicked.has(btn)) return;
+  clicked.add(btn);
+
+  var attempts = 0;
+  function attempt() {
+    attempts += 1;
+    try {
+      btn.click();
+    } catch (_e) {
+      debugLog('native-click-failed', { label: cleanBtnText(btn) });
+    }
+    try {
+      clickWithEvents(btn);
+    } catch (_e2) {
+      debugLog('event-click-failed', { label: cleanBtnText(btn) });
+    }
+    setTimeout(function() {
+      if (!stillActionable(btn, container) || attempts >= MAX_CLICK_ATTEMPTS) {
+        var label = cleanBtnText(btn) || btn.getAttribute('aria-label') || 'approve';
+        var site = location.hostname.replace(/^www\./, '');
+        var excerpt = (text || '').slice(0, MAX_EXCERPT_LENGTH).replace(/\n+/g, ' ').trim();
+        showToast('"' + label + '" approved on ' + site);
+        chrome.runtime.sendMessage({
+          type: 'LOG_APPROVAL',
+          payload: { site: site, label: label, excerpt: excerpt, score: score, attempts: attempts }
+        });
+        return;
+      }
+      attempt();
+    }, CLICK_RETRY_DELAY_MS);
+  }
+  attempt();
+}
 
 function scanDocument() {
   if (!settings || !settings.enabled) return;
   if (!isSiteEnabled()) return;
 
-  var allButtons = Array.from(document.querySelectorAll('button, [role="button"]'))
-    .filter(function(b) { return !b.disabled; });
+  var candidates = queryCandidates();
+  if (!candidates.length) return;
 
-  for (var i = 0; i < allButtons.length; i++) {
-    var btn = allButtons[i];
-    if (clicked.has(btn)) continue;
+  var best = null;
+  for (var i = 0; i < candidates.length; i++) {
+    var btn = candidates[i];
+    if (!btn || clicked.has(btn)) continue;
+    if (isDisabled(btn) || !isVisible(btn)) continue;
     if (!isApprove(btn)) continue;
 
+    var attemptCount = attempted.get(btn) || 0;
+    if (attemptCount >= MAX_SCAN_ATTEMPTS) continue;
+    markAttempt(btn);
+
     var container = findDialogContainer(btn);
-    if (!container) continue;
+    var contextText = (container ? container.innerText : (btn.closest('form, section, div') || btn).innerText) || '';
+    if (!passesRules(contextText)) {
+      debugLog('rules-blocked', { label: cleanBtnText(btn) });
+      continue;
+    }
 
-    var text = container.innerText || '';
-    if (!passesRules(text)) continue;
+    var host = location.hostname.replace(/^www\./, '');
+    var adapter = getHostAdapter(host);
+    var semanticHit = adapter.selectors.some(function(sel) {
+      try { return btn.matches(sel) || !!btn.closest(sel); } catch (_e) { return false; }
+    });
+    var score = scoreCandidate(btn, container, contextText, semanticHit);
+    var baseThreshold = Number(settings.confidenceThreshold || defaultSettings.confidenceThreshold) || 50;
+    var destructiveThreshold = Number(settings.destructiveThreshold || defaultSettings.destructiveThreshold) || 75;
+    var hasDestructive = DESTRUCTIVE.some(function(p) { return p.test(contextText); });
+    var threshold = hasDestructive ? destructiveThreshold : baseThreshold;
 
-    clicked.add(btn);
-    btn.click();
+    if (!container && !semanticHit) {
+      debugLog('no-dialog-context', { label: cleanBtnText(btn), score: score });
+      continue;
+    }
+    if (score < threshold) {
+      debugLog('low-score', { label: cleanBtnText(btn), score: score, threshold: threshold });
+      continue;
+    }
 
-    var label = cleanBtnText(btn);
-    var site = location.hostname.replace(/^www\./, '');
-    var excerpt = text.slice(0, 120).replace(/\n+/g, ' ').trim();
-    showToast('"' + label + '" approved on ' + site);
-    chrome.runtime.sendMessage({ type: 'LOG_APPROVAL', payload: { site: site, label: label, excerpt: excerpt } });
+    if (!best || score > best.score) {
+      best = { btn: btn, container: container, text: contextText, score: score };
+    }
   }
+
+  if (best) executeApproval(best.btn, best.container, best.text, best.score);
 }
 
 var scanPending = false;
 function scheduleScan() {
   if (scanPending) return;
   scanPending = true;
-  requestAnimationFrame(function() { scanPending = false; scanDocument(); });
+  setTimeout(function() {
+    scanPending = false;
+    scanDocument();
+  }, SCAN_SCHEDULE_DELAY_MS);
 }
 
 new MutationObserver(scheduleScan).observe(document.documentElement, {
-  childList: true, subtree: true
+  childList: true,
+  subtree: true,
+  attributes: true,
+  characterData: true
 });
 
-setInterval(scanDocument, 800);
+document.addEventListener('visibilitychange', scheduleScan, true);
+window.addEventListener('focus', scheduleScan, true);
+window.addEventListener('pageshow', scheduleScan, true);
+
+setInterval(scanDocument, SCAN_INTERVAL_MS);
 
 function waitForSettings(n) {
   n = n || 0;
-  if (settings !== null) { scanDocument(); return; }
-  if (n > 30) { settings = defaultSettings; scanDocument(); return; }
+  if (settings !== null) {
+    scanDocument();
+    return;
+  }
+  if (n > 30) {
+    settings = defaultSettings;
+    scanDocument();
+    return;
+  }
   setTimeout(function() { waitForSettings(n + 1); }, 100);
 }
 waitForSettings();
