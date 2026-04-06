@@ -4,6 +4,7 @@
 var APPROVE_PATTERNS = [
   /^approve$/i, /^allow$/i, /^confirm$/i, /^yes$/i,
   /^allow access$/i, /^grant access$/i, /^accept$/i,
+  /^auto ?approve$/i,
   /allow tool/i, /approve action/i, /approve request/i
 ];
 
@@ -15,6 +16,7 @@ var DESTRUCTIVE = [
   /delete/i, /remove/i, /destroy/i, /drop/i,
   /wipe/i, /erase/i, /purge/i, /format/i
 ];
+var DIALOG_CLASS_PATTERN = /\b(dialog|modal|popover|sheet|drawer|overlay)\b/i;
 
 const defaultSettings = {
   enabled: true,
@@ -122,9 +124,21 @@ function passesRules(text) {
 // Walk up DOM to find a container with both Approve + Deny buttons
 function findDialogContainer(approveBtn) {
   var el = approveBtn.parentElement;
-  for (var i = 0; i < 10 && el && el !== document.body; i++) {
+  for (var i = 0; i < 12 && el && el !== document.body; i++) {
     var btns = Array.from(el.querySelectorAll('button, [role="button"]'));
     if (btns.some(isDeny) && btns.some(isApprove)) return el;
+
+    var role = (el.getAttribute('role') || '').toLowerCase();
+    var ariaModal = (el.getAttribute('aria-modal') || '').toLowerCase();
+    var className = (el.className || '').toString().toLowerCase();
+    if (
+      role === 'dialog' ||
+      role === 'alertdialog' ||
+      ariaModal === 'true' ||
+      DIALOG_CLASS_PATTERN.test(className)
+    ) {
+      return el;
+    }
     el = el.parentElement;
   }
   return null;
