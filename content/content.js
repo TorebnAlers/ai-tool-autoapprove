@@ -19,6 +19,11 @@ var DESTRUCTIVE = [
   /wipe/i, /erase/i, /purge/i, /format/i
 ];
 var DIALOG_CLASS_PATTERN = /\b(dialog|modal|popover|sheet|drawer|overlay|prompt|confirm)\b/i;
+var MAX_CLICK_ATTEMPTS = 3;
+var CLICK_RETRY_DELAY_MS = 140;
+var MAX_SCAN_ATTEMPTS = 5;
+var SCAN_SCHEDULE_DELAY_MS = 60;
+var SCAN_INTERVAL_MS = 800;
 var ACTIONABLE_SELECTOR = [
   'button',
   '[role="button"]',
@@ -349,7 +354,7 @@ function showToast(msg) {
   setTimeout(function() {
     el.style.opacity = '0';
     setTimeout(function() { el.remove(); }, 250);
-  }, 3000);
+  }, 4000);
 }
 
 var attempted = new WeakMap();
@@ -371,7 +376,7 @@ function executeApproval(btn, container, text, score) {
     try { btn.click(); } catch (_e) {}
     try { clickWithEvents(btn); } catch (_e2) {}
     setTimeout(function() {
-      if (!stillActionable(btn, container) || attempts >= 3) {
+      if (!stillActionable(btn, container) || attempts >= MAX_CLICK_ATTEMPTS) {
         var label = cleanBtnText(btn) || btn.getAttribute('aria-label') || 'approve';
         var site = location.hostname.replace(/^www\./, '');
         var excerpt = (text || '').slice(0, 120).replace(/\n+/g, ' ').trim();
@@ -383,7 +388,7 @@ function executeApproval(btn, container, text, score) {
         return;
       }
       attempt();
-    }, 140);
+    }, CLICK_RETRY_DELAY_MS);
   }
   attempt();
 }
@@ -403,7 +408,7 @@ function scanDocument() {
     if (!isApprove(btn)) continue;
 
     var attemptCount = attempted.get(btn) || 0;
-    if (attemptCount >= 5) continue;
+    if (attemptCount >= MAX_SCAN_ATTEMPTS) continue;
     markAttempt(btn);
 
     var container = findDialogContainer(btn);
@@ -448,7 +453,7 @@ function scheduleScan() {
   setTimeout(function() {
     scanPending = false;
     scanDocument();
-  }, 60);
+  }, SCAN_SCHEDULE_DELAY_MS);
 }
 
 new MutationObserver(scheduleScan).observe(document.documentElement, {
@@ -462,7 +467,7 @@ document.addEventListener('visibilitychange', scheduleScan, true);
 window.addEventListener('focus', scheduleScan, true);
 window.addEventListener('pageshow', scheduleScan, true);
 
-setInterval(scanDocument, 800);
+setInterval(scanDocument, SCAN_INTERVAL_MS);
 
 function waitForSettings(n) {
   n = n || 0;
