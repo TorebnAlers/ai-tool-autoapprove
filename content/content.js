@@ -4,9 +4,14 @@
 var APPROVE_PATTERNS = [
   /^approve$/i, /^allow$/i, /^confirm$/i, /^yes$/i, /^continue$/i, /^proceed$/i,
   /^allow access$/i, /^grant access$/i, /^accept$/i, /^run$/i, /^run anyway$/i,
+  /^allow once$/i,
+  /^always allow$/i,
+  /^allow for this chat$/i,
+  /^allow for this session$/i,
+  /^approve all$/i,
   /^auto ?approve$/i,
   /allow tool/i, /approve action/i, /approve request/i, /allow .*request/i,
-  /allow .*permission/i, /run tool/i, /execute/i
+  /allow .*permission/i, /run tool/i, /authorize/i, /execute/i
 ];
 
 var DENY_PATTERNS = [
@@ -19,6 +24,10 @@ var DESTRUCTIVE = [
   /wipe/i, /erase/i, /purge/i, /format/i
 ];
 var DIALOG_CLASS_PATTERN = /\b(dialog|modal|popover|sheet|drawer|overlay|prompt|confirm)\b/i;
+// Context terms commonly present in tool-permission prompts where button text is generic
+// (e.g., "Allow", "Run"). This helps detect chat approval UI context when wrappers are weak.
+// "mcp" = Model Context Protocol, which some chat UIs include in permission text.
+var PROMPT_CONTEXT_PATTERN = /\b(tool|permission|access|request|authorize|approval|agent|mcp|run|execute|connect)\b/i;
 var MAX_CLICK_ATTEMPTS = 3;
 var CLICK_RETRY_DELAY_MS = 140;
 var MAX_SCAN_ATTEMPTS = 5;
@@ -33,15 +42,35 @@ var ACTIONABLE_SELECTOR = [
   '[data-testid*="approve" i]',
   '[data-testid*="allow" i]',
   '[data-testid*="confirm" i]',
+  '[data-testid*="permission" i]',
+  '[data-testid*="authorize" i]',
   '[aria-label*="approve" i]',
   '[aria-label*="allow" i]',
   '[aria-label*="confirm" i]',
+  '[aria-label*="permission" i]',
+  '[aria-label*="authorize" i]',
   '[title*="approve" i]',
   '[title*="allow" i]',
-  '[title*="confirm" i]'
+  '[title*="confirm" i]',
+  '[title*="permission" i]',
+  '[title*="authorize" i]'
 ].join(',');
 
 var DEFAULT_ADAPTERS = {
+  'perplexity.ai': {
+    selectors: [
+      '[data-testid*="permission" i] button',
+      '[data-testid*="tool" i] button',
+      '[data-testid*="confirm" i] button'
+    ]
+  },
+  'claude.ai': {
+    selectors: [
+      '[data-testid*="tool" i] button',
+      '[data-testid*="permission" i] button',
+      '[data-testid*="confirm" i] button'
+    ]
+  },
   'github.com': {
     selectors: [
       '[data-testid*="copilot" i] button',
@@ -54,6 +83,13 @@ var DEFAULT_ADAPTERS = {
   },
   'chat.openai.com': {
     selectors: ['[data-testid*="confirm" i]', '[data-testid*="approve" i]']
+  },
+  'copilot.microsoft.com': {
+    selectors: [
+      '[data-testid*="confirm" i]',
+      '[data-testid*="permission" i]',
+      '[data-testid*="approve" i]'
+    ]
   }
 };
 
@@ -304,13 +340,23 @@ function hasSiblingDeny(container) {
   return false;
 }
 
-function scoreCandidate(btn, container, text, isSemanticHit) {
+function hasPromptContext(btn) {
+  var scope =
+    btn.closest('[role="dialog"], [aria-modal="true"], dialog, form') ||
+    btn.closest('[class*="dialog" i], [class*="modal" i], [class*="popover" i], [class*="prompt" i]');
+  if (!scope) return false;
+  var contextText = (scope.innerText || '').toLowerCase();
+  return PROMPT_CONTEXT_PATTERN.test(contextText);
+}
+
+function scoreCandidate(btn, container, text, isSemanticHit, hasContextHint) {
   var score = 0;
   var s = elementSignals(btn);
   var combined = [s.text, s.aria, s.title, s.testid, s.value].join(' ');
   if (isApprove(btn)) score += 40;
   if (/^approve$|^allow$|^confirm$|^continue$|^run$/i.test(norm(s.text))) score += 20;
   if (isSemanticHit) score += 25;
+  if (hasContextHint) score += 15;
   if (container) score += 15;
   if (hasSiblingDeny(container)) score += 20;
   if (DIALOG_CLASS_PATTERN.test(norm((container && container.className) || ''))) score += 5;
@@ -435,13 +481,16 @@ function scanDocument() {
     var semanticHit = adapter.selectors.some(function(sel) {
       try { return btn.matches(sel) || !!btn.closest(sel); } catch (_e) { return false; }
     });
-    var score = scoreCandidate(btn, container, contextText, semanticHit);
+    var contextHint = hasPromptContext(btn);
+    var score = scoreCandidate(btn, container, contextText, semanticHit, contextHint);
     var baseThreshold = Number(settings.confidenceThreshold || defaultSettings.confidenceThreshold) || 50;
     var destructiveThreshold = Number(settings.destructiveThreshold || defaultSettings.destructiveThreshold) || 75;
     var hasDestructive = DESTRUCTIVE.some(function(p) { return p.test(contextText); });
     var threshold = hasDestructive ? destructiveThreshold : baseThreshold;
 
-    if (!container && !semanticHit) {
+    // Some chat UIs render permission prompts without stable dialog semantics/selectors.
+    // Allow prompt-context evidence to qualify candidates when wrapper detection is absent.
+    if (!container && !semanticHit && !contextHint) {
       debugLog('no-dialog-context', { label: cleanBtnText(btn), score: score });
       continue;
     }
