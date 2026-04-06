@@ -25,13 +25,17 @@
         "https://perplexity.ai/*",
         "https://*.perplexity.ai/*",
         "https://claude.ai/*",
+        "https://*.claude.ai/*",
         "https://chatgpt.com/*",
+        "https://*.chatgpt.com/*",
         "https://chat.openai.com/*",
         "https://github.com/*",
+        "https://*.github.com/*",
         "https://copilot.microsoft.com/*"
       ],
       "js": ["content/content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ]
 }

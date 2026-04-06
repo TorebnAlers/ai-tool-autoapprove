@@ -15,6 +15,9 @@ A Manifest V3 Chrome extension that automatically approves AI agent tool-call pe
 ## Features
 
 - 🔄 **Auto-approve** — clicks Allow/Approve/Confirm buttons in AI chat dialogs automatically
+- 🧠 **Multi-strategy detection** — combines semantic selectors, text/aria/title/testid heuristics, and dialog context scoring
+- 🧩 **Deep traversal** — scans open Shadow DOM and same-origin iframes for approval prompts
+- 🔁 **Retry click engine** — dispatches robust click event sequences with bounded retries
 - 🔔 **Toast notification** — shows a small overlay so you always know the extension acted
 - ☠️ **Kill switch** — instantly disable the extension from the popup
 - 🏷️ **Approval modes** — Auto (approve everything), Whitelist (approve only matching keywords), Blacklist (block matching keywords, approve the rest)
@@ -27,8 +30,8 @@ The extension runs a `MutationObserver` in each supported page. When a new dialo
 1. Checks if the extension is globally enabled
 2. Checks if the current site is enabled
 3. Applies whitelist/blacklist rules against the dialog text
-4. Finds the approve button (by `data-testid` selector first, then by visible button text)
-5. Clicks it and shows a toast
+4. Scores candidate approve actions using multiple signals and context confidence
+5. Clicks the best candidate with retry verification and shows a toast
 
 ## Installation (Developer Mode)
 
@@ -57,6 +60,12 @@ This extension removes a safety checkpoint. Use with care:
 - Use **Blacklist mode** to block auto-approval of destructive actions (`delete`, `remove`, etc.)
 - Use the **kill switch** when working on sensitive repos
 - Never leave it enabled unattended on production systems
+
+## Reliability Notes
+
+- The extension now targets high reliability with layered heuristics, but “every time everywhere” is not technically guaranteed.
+- Limits still exist for closed Shadow DOM, cross-origin iframes, and anti-automation defenses.
+- Use `debug: true` in stored settings to inspect “why not approved” diagnostics in page console.
 
 ## Updating Selectors
 
