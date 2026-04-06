@@ -4,7 +4,7 @@
 var APPROVE_PATTERNS = [
   /^approve$/i, /^allow$/i, /^confirm$/i, /^yes$/i,
   /^allow access$/i, /^grant access$/i, /^accept$/i,
-  /^auto ?approve$/i, /auto ?approve/i,
+  /^auto ?approve$/i,
   /allow tool/i, /approve action/i, /approve request/i
 ];
 
@@ -16,6 +16,7 @@ var DESTRUCTIVE = [
   /delete/i, /remove/i, /destroy/i, /drop/i,
   /wipe/i, /erase/i, /purge/i, /format/i
 ];
+var DIALOG_CLASS_PATTERN = /\b(dialog|modal|popover|sheet|drawer|overlay)\b/i;
 
 const defaultSettings = {
   enabled: true,
@@ -134,7 +135,7 @@ function findDialogContainer(approveBtn) {
       role === 'dialog' ||
       role === 'alertdialog' ||
       ariaModal === 'true' ||
-      /(dialog|modal|popover|sheet|drawer|overlay)/i.test(className)
+      DIALOG_CLASS_PATTERN.test(className)
     ) {
       return el;
     }
