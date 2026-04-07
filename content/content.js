@@ -1,5 +1,6 @@
-// AI Tool AutoApprove - Content Script v0.6
-// Reliability-focused multi-strategy matcher with deep traversal and retry clicks.
+// AI Tool AutoApprove - Content Script v0.7
+// Broadened context detection for inline permission prompts (Perplexity, Comet, etc.)
+// that do not use dialog/modal wrappers.
 
 var APPROVE_PATTERNS = [
   /^approve$/i, /^allow$/i, /^confirm$/i, /^yes$/i, /^continue$/i, /^proceed$/i,
@@ -25,9 +26,8 @@ var DESTRUCTIVE = [
 ];
 var DIALOG_CLASS_PATTERN = /\b(dialog|modal|popover|sheet|drawer|overlay|prompt|confirm)\b/i;
 // Context terms commonly present in tool-permission prompts where button text is generic
-// (e.g., "Allow", "Run"). This helps detect chat approval UI context when wrappers are weak.
-// "mcp" = Model Context Protocol, which some chat UIs include in permission text.
-var PROMPT_CONTEXT_PATTERN = /\b(tool|permission|access|request|authorize|approval|agent|mcp|run|execute|connect)\b/i;
+// (e.g., "Allow", "Run"). Includes "mcp" (Model Context Protocol) and common chat UI terms.
+var PROMPT_CONTEXT_PATTERN = /\b(tool|permission|access|request|authorize|approval|agent|mcp|run|execute|connect|github|function|action)\b/i;
 var MAX_CLICK_ATTEMPTS = 3;
 var CLICK_RETRY_DELAY_MS = 140;
 var MAX_SCAN_ATTEMPTS = 5;
@@ -62,6 +62,15 @@ var DEFAULT_ADAPTERS = {
       '[data-testid*="permission" i] button',
       '[data-testid*="tool" i] button',
       '[data-testid*="confirm" i] button'
+    ]
+  },
+  // Comet is a Perplexity product — same permission UI style
+  'comet.perplexity.ai': {
+    selectors: [
+      '[data-testid*="permission" i] button',
+      '[data-testid*="tool" i] button',
+      '[data-testid*="confirm" i] button',
+      'button'
     ]
   },
   'claude.ai': {
@@ -112,6 +121,7 @@ const defaultSettings = {
   sites: {
     '*': true,
     'perplexity.ai': true,
+    'comet.perplexity.ai': true,
     'claude.ai': true,
     'chatgpt.com': true,
     'chat.openai.com': true,
@@ -277,7 +287,15 @@ function collectSearchRoots() {
 
 function getHostAdapter(host) {
   var merged = {};
-  var defaults = DEFAULT_ADAPTERS[host] || { selectors: [] };
+  // Match adapter by longest suffix (so comet.perplexity.ai beats perplexity.ai)
+  var bestKey = null;
+  var keys = Object.keys(DEFAULT_ADAPTERS);
+  for (var i = 0; i < keys.length; i++) {
+    if (host === keys[i] || host.endsWith('.' + keys[i]) || host.indexOf(keys[i]) !== -1) {
+      if (!bestKey || keys[i].length > bestKey.length) bestKey = keys[i];
+    }
+  }
+  var defaults = bestKey ? DEFAULT_ADAPTERS[bestKey] : { selectors: [] };
   var fromSettings = (settings && settings.adapters && settings.adapters[host]) || { selectors: [] };
   merged.selectors = (defaults.selectors || []).concat(fromSettings.selectors || []);
   return merged;
@@ -340,13 +358,46 @@ function hasSiblingDeny(container) {
   return false;
 }
 
+/**
+ * hasPromptContext checks if a button is inside (or near) a permission prompt.
+ *
+ * Strategy:
+ *  1. Walk up to 12 ancestor levels looking for context text.
+ *  2. Also check the page-level body text as a last resort (weaker signal).
+ *
+ * This handles Perplexity/Comet inline prompts that are NOT wrapped in a
+ * formal dialog/modal element — they render as a plain <div> inside the chat.
+ */
 function hasPromptContext(btn) {
+  // First: try the formal dialog wrapper (original logic)
   var scope =
     btn.closest('[role="dialog"], [aria-modal="true"], dialog, form') ||
     btn.closest('[class*="dialog" i], [class*="modal" i], [class*="popover" i], [class*="prompt" i]');
-  if (!scope) return false;
-  var contextText = (scope.innerText || '').toLowerCase();
-  return PROMPT_CONTEXT_PATTERN.test(contextText);
+  if (scope) {
+    var contextText = (scope.innerText || '').toLowerCase();
+    if (PROMPT_CONTEXT_PATTERN.test(contextText)) return true;
+  }
+
+  // Second: walk ancestor chain looking for prompt context text (inline prompts)
+  var el = btn.parentElement;
+  for (var i = 0; i < 12 && el && el !== document.body; i++) {
+    var text = (el.innerText || '').toLowerCase();
+    if (PROMPT_CONTEXT_PATTERN.test(text)) return true;
+    // Extra: if this ancestor has both an Approve and a Deny sibling button — strong signal
+    var sibBtns = Array.from(el.querySelectorAll('button, [role="button"]'));
+    if (sibBtns.length >= 2 && sibBtns.some(isApprove) && sibBtns.some(isDeny)) return true;
+    el = el.parentElement;
+  }
+
+  // Third (weakest): check visible text near the button (5 ancestor levels, short text only)
+  var near = btn.parentElement;
+  for (var j = 0; j < 5 && near; j++) {
+    var t = (near.innerText || '').replace(/\s+/g, ' ').trim();
+    if (t.length < 400 && PROMPT_CONTEXT_PATTERN.test(t.toLowerCase())) return true;
+    near = near.parentElement;
+  }
+
+  return false;
 }
 
 function scoreCandidate(btn, container, text, isSemanticHit, hasContextHint) {
@@ -488,8 +539,9 @@ function scanDocument() {
     var hasDestructive = DESTRUCTIVE.some(function(p) { return p.test(contextText); });
     var threshold = hasDestructive ? destructiveThreshold : baseThreshold;
 
-    // Some chat UIs render permission prompts without stable dialog semantics/selectors.
-    // Allow prompt-context evidence to qualify candidates when wrapper detection is absent.
+    // Allow inline permission prompts to qualify via contextHint even without a formal dialog wrapper.
+    // Perplexity and Comet render permission boxes as plain divs inside the chat, so container
+    // and semanticHit may both be falsy — contextHint from the ancestor walk covers them.
     if (!container && !semanticHit && !contextHint) {
       debugLog('no-dialog-context', { label: cleanBtnText(btn), score: score });
       continue;
